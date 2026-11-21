@@ -29,6 +29,8 @@ pnpm build
 
 Vite writes the static site to `dist/`. The GitHub Actions workflow in `.github/workflows/pages.yml` builds and deploys that directory to GitHub Pages when a commit is pushed to `main`.
 
+Before the first deployment, enable Pages in the repository's **Settings → Pages** and set the source to **GitHub Actions**. The official [`actions/configure-pages`](https://github.com/actions/configure-pages) action then reads the Pages configuration for the workflow.
+
 ## Privacy
 
 PGN and FEN parsing and engine analysis run in the visitor's browser. The engine JavaScript, WebAssembly, piece images, and fonts are served as static site files; no game-data API or application server is used. The hosting provider still receives ordinary web request metadata needed to deliver static files.
