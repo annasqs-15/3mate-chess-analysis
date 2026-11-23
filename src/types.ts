@@ -49,4 +49,6 @@ export interface MoveReview {
   color: 'w' | 'b';
   category: MoveCategory;
   expectedPointsLost: number;
+  centipawnLoss: number;
+  forcedMate?: { line: string[]; mateIn: number };
 }

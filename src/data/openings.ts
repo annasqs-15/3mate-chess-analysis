@@ -7,6 +7,7 @@ const COMMON_OPENING_LINES = [
   'd4 d5 c4 c6 Nc3 Nf6',
   'e4 e6 d4 d5 Nc3 Nf6',
   'e4 c6 d4 d5 Nc3 dxe4',
+  'e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng3 Bg6 h4 h6 Nf3 Nd7 h5 Bh7 Bd3 Bxd3 Qxd3 e6',
   'd4 Nf6 c4 g6 Nc3 Bg7 e4 d6',
   'c4 e5 Nc3 Nf6 g3 d5',
   'Nf3 d5 g3 c5 Bg2 Nc6',

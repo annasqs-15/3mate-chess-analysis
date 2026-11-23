@@ -22,6 +22,9 @@ const DEMO_PGN = `[Event "Ruy Lopez · study sample"]
 
 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O 9. h3 Na5 10. Bc2 c5 *`;
 
+const REVIEW_DEPTH = 12;
+const REVIEW_MULTIPV = 3;
+
 export default function App() {
   const [game, setGame] = useState<ParsedGame>(() => parsePgn(DEMO_PGN));
   const [currentPly, setCurrentPly] = useState(0);
@@ -125,7 +128,7 @@ export default function App() {
       await worker.ready();
       for (let index = 0; index < positionList.length; index += 1) {
         if (runIdRef.current !== runId) return;
-        result[index] = await worker.analyze(positionList[index].fen, 10, 3);
+        result[index] = await worker.analyze(positionList[index].fen, REVIEW_DEPTH, REVIEW_MULTIPV);
         if (runIdRef.current !== runId) return;
         setEvaluations([...result]);
         setProgress({ done: index + 1, total: positionList.length });
@@ -197,7 +200,7 @@ export default function App() {
               <ChessBoard fen={currentSnapshot.fen} flipped={flipped} onFlip={() => setFlipped((value) => !value)} onMove={makeMove} lastMove={lastMove} />
               <div className="player-strip"><span className="player-avatar white-avatar">W</span><span className="opponent-name">{whiteName}</span><span className="opponent-rating">{game.headers.WhiteElo ? `(${game.headers.WhiteElo})` : 'You'}</span><span className="clock-label">{game.headers.Date && game.headers.Date !== '?' ? game.headers.Date : '3MATE REVIEW'}</span></div>
               <div className="board-controls">
-                <span className="move-position">{currentPly === 0 ? 'Starting position' : `${Math.ceil(currentPly / 2)}${currentPly % 2 ? '…' : '.'} ${currentSnapshot.san ?? ''}`}</span>
+                <span className="move-position">{currentPly === 0 ? 'Starting position' : `${Math.ceil(currentPly / 2)}${currentPly % 2 === 1 ? '.' : '...'} ${currentSnapshot.san ?? ''}`}</span>
                 <div className="navigation-buttons">
                   <button className="icon-button nav-step" type="button" onClick={() => selectPly(0)} disabled={currentPly === 0} aria-label="Go to start"><Flag size={15} /></button>
                   <button className="icon-button nav-step" type="button" onClick={() => selectPly(currentPly - 1)} disabled={currentPly === 0} aria-label="Previous move"><ChevronLeft size={18} /></button>

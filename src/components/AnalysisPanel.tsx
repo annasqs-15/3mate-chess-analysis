@@ -31,7 +31,10 @@ export default function AnalysisPanel({
   onPlayLine,
 }: AnalysisPanelProps) {
   const counts = CATEGORY_ORDER.map((category) => ({ category, count: reviews.filter((review) => review.category === category).length })).filter((item) => item.count > 0);
-  const topLines = evaluation?.lines ?? [];
+  const forcedMate = currentReview?.forcedMate;
+  const evaluationWhite = forcedMate ? (currentReview.color === 'w' ? 12 : -12) : evaluation?.evalWhite ?? 0;
+  const evaluationLabel = forcedMate ? `M${forcedMate.mateIn}` : evaluation ? formatEvaluation(evaluation.evalWhite) : '—';
+  const topLines = forcedMate ? [] : evaluation?.lines ?? [];
 
   return (
     <aside className="analysis-panel">
@@ -47,15 +50,20 @@ export default function AnalysisPanel({
         <div className="eval-topline">
           <div>
             <span className="subtle-label">POSITION EVALUATION</span>
-            <div className={`eval-number ${(evaluation?.evalWhite ?? 0) >= 0 ? 'eval-positive' : 'eval-negative'}`}>
-              {evaluation ? formatEvaluation(evaluation.evalWhite) : '—'}
+            <div className={`eval-number ${evaluationWhite >= 0 ? 'eval-positive' : 'eval-negative'}`}>
+              {evaluationLabel}
             </div>
           </div>
-          {currentReview && <MoveIcon category={currentReview.category} showLabel />}
+          {currentReview && (
+            <div className="move-review-readout" aria-label={`${currentReview.category}, ${Math.round(currentReview.centipawnLoss)} centipawn loss`}>
+              <MoveIcon category={currentReview.category} showLabel />
+              {currentReview.category !== 'Book' && <span>{Math.round(currentReview.centipawnLoss)} cp loss</span>}
+            </div>
+          )}
           {evaluation && !currentReview && <span className="depth-tag">Depth {evaluation.depth}</span>}
         </div>
-        <div className="eval-meter" aria-label={evaluation ? `Evaluation ${formatEvaluation(evaluation.evalWhite)} for White` : 'Evaluation not available'}>
-          <span className="eval-meter-white" style={{ width: `${evaluation ? Math.max(8, Math.min(92, 50 + evaluation.evalWhite * 8)) : 50}%` }} />
+        <div className="eval-meter" aria-label={forcedMate ? `Forced mate for ${currentReview.color === 'w' ? 'White' : 'Black'} in ${forcedMate.mateIn}` : evaluation ? `Evaluation ${formatEvaluation(evaluation.evalWhite)} for White` : 'Evaluation not available'}>
+          <span className="eval-meter-white" style={{ width: `${evaluation ? Math.max(8, Math.min(92, 50 + evaluationWhite * 8)) : 50}%` }} />
           <span className="eval-meter-center" />
         </div>
         <div className="meter-legend"><span>Black</span><span>Equal</span><span>White</span></div>
@@ -66,7 +74,15 @@ export default function AnalysisPanel({
           <div><span className="eyebrow">TOP LINES</span><h3>Best continuations</h3></div>
           {evaluation && <span className="depth-tag">Depth {evaluation.depth}</span>}
         </div>
-        {topLines.length ? (
+        {forcedMate ? (
+          <div className="variation-list">
+            <div className="variation-row verified-mate-line" role="note" aria-label={`Forced mate in ${forcedMate.mateIn} after the engine's best reply`}>
+              <span className="variation-number variation-number-best">M</span>
+              <span className="variation-text">{forcedMate.line.join(' ')}</span>
+              <span className={`variation-eval forced-mate-eval ${currentReview.color === 'w' ? 'eval-positive' : 'eval-negative'}`}>Mate in {forcedMate.mateIn}</span>
+            </div>
+          </div>
+        ) : topLines.length ? (
           <div className="variation-list">
             {topLines.map((line, index) => (
               <button className="variation-row" key={`${line.uci[0] ?? index}-${index}`} type="button" onClick={() => onPlayLine(line)}>
@@ -102,7 +118,7 @@ export default function AnalysisPanel({
             {counts.map(({ category, count }) => <div className="category-count" key={category}><MoveIcon category={category} small /><span>{category}</span><strong>{count}</strong></div>)}
           </div>
         ) : <p className="summary-empty">Classifications will appear after the review finishes.</p>}
-        <p className="heuristic-note">Scores and labels are 3mate estimates based on local engine evaluations.</p>
+        <p className="heuristic-note">Quality uses centipawn loss (Best ≤10, Excellent ≤30, Good ≤60, Inaccuracy ≤100, Mistake ≤200, Blunder &gt;200). Brilliant, Great, Book, Miss, and checkmate follow separate rules. These are 3mate estimates, not official Chess.com labels.</p>
       </div>
     </aside>
   );

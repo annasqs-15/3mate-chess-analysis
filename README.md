@@ -10,7 +10,7 @@ A browser-only PGN/FEN chess review tool. Import a game or position, step throug
 - Evaluation graph, move-by-move classifications, and estimated accuracy summary.
 - Responsive layout for desktop and mobile.
 
-Move labels and accuracy are 3mate heuristics based on local engine evaluations. They are educational estimates, not official Chess.com classifications or a promise of engine-perfect annotation.
+Move labels and accuracy are 3mate heuristics based on local engine evaluations. Quality categories use centipawn loss from the engine's best move: Best ≤10 cp, Excellent ≤30 cp, Good ≤60 cp, Inaccuracy ≤100 cp, Mistake ≤200 cp, and Blunder >200 cp. Brilliant marks an engine-supported material sacrifice that remains near the best result; Great marks a near-best move (≤20 cp loss) in a critical position where it is at least 80 cp better than the next distinct engine candidate. Miss marks a missed forced mate, a concrete material win of at least 2.7 pawns, or a clear engine-confirmed winning chance of at least 2.7 pawns that is lost with at least 100 cp loss. Book labels follow the opening lines bundled with the site, and a move delivering checkmate is classified as Best with zero cp loss. Brilliant, Great, Book, and Miss replace the ordinary quality label rather than stacking with it. These are educational estimates, not official Chess.com classifications or a promise of engine-perfect annotation.
 
 ## Run locally
 
