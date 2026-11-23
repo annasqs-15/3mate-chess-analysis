@@ -10,7 +10,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "tsc --noEmit && vite build",
+    "test": "pnpm test:scoring && pnpm test:engine",
     "test:scoring": "node scripts/verify-scoring.mjs",
+    "test:engine": "node scripts/verify-engine.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 3000"
   },
   "dependencies": {

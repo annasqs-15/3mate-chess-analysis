@@ -6,6 +6,7 @@ interface ParsedInfo {
   multipv: number;
   evalWhite: number;
   mate?: number;
+  bound?: 'lower' | 'upper';
   uci: string[];
 }
 
@@ -13,18 +14,35 @@ interface ActiveSearch {
   fen: string;
   lines: Map<number, ParsedInfo>;
   resolve: (result: PositionEvaluation) => void;
+  reject: (reason: Error) => void;
   timeout: number;
 }
 
 export class LocalStockfish {
-  private worker: Worker;
+  private worker!: Worker;
   private waiters = new Set<(line: string) => void>();
   private activeSearch: ActiveSearch | null = null;
   private readyPromise: Promise<void> | null = null;
 
   constructor() {
+    this.spawnWorker();
+  }
+
+  private spawnWorker(): void {
     this.worker = new Worker(`${import.meta.env.BASE_URL}engine/stockfish-19-lite-single.js`);
     this.worker.onmessage = (event: MessageEvent<string>) => this.handleLine(String(event.data));
+  }
+
+  private abortActiveSearch(reason: Error): void {
+    const search = this.activeSearch;
+    if (!search) return;
+    window.clearTimeout(search.timeout);
+    this.activeSearch = null;
+    this.worker.terminate();
+    this.waiters.clear();
+    this.readyPromise = null;
+    this.spawnWorker();
+    search.reject(reason);
   }
 
   private handleLine(line: string): void {
@@ -49,6 +67,7 @@ export class LocalStockfish {
         san: this.toSanLine(search.fen, lineInfo.uci),
         evalWhite: lineInfo.evalWhite,
         ...(lineInfo.mate === undefined ? {} : { mate: lineInfo.mate }),
+        ...(lineInfo.bound ? { bound: lineInfo.bound } : {}),
         depth: lineInfo.depth,
       }));
       const top = parsedLines[0];
@@ -79,6 +98,7 @@ export class LocalStockfish {
       multipv,
       evalWhite: turn === 'w' ? pawns : -pawns,
       ...(mate === undefined ? {} : { mate }),
+      ...(line.includes(' lowerbound') ? { bound: 'lower' as const } : line.includes(' upperbound') ? { bound: 'upper' as const } : {}),
       uci: pv.trim().split(/\s+/),
     };
   }
@@ -122,7 +142,7 @@ export class LocalStockfish {
 
   async ready(): Promise<void> {
     if (this.readyPromise) return this.readyPromise;
-    this.readyPromise = (async () => {
+    const attempt = (async () => {
       const uci = this.waitFor('uciok');
       this.worker.postMessage('uci');
       await uci;
@@ -131,6 +151,13 @@ export class LocalStockfish {
       this.worker.postMessage('isready');
       await ready;
     })();
+    this.readyPromise = attempt.catch((error: unknown) => {
+      this.worker.terminate();
+      this.waiters.clear();
+      this.readyPromise = null;
+      this.spawnWorker();
+      throw error;
+    });
     return this.readyPromise;
   }
 
@@ -138,27 +165,12 @@ export class LocalStockfish {
     await this.ready();
     if (this.activeSearch) throw new Error('The engine is already analyzing a position.');
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => {
-        const search = this.activeSearch;
-        if (!search) return;
-        this.activeSearch = null;
-        const top = [...search.lines.values()].sort((a, b) => a.multipv - b.multipv)[0];
-        resolve({
-          fen: search.fen,
-          evalWhite: top?.evalWhite ?? 0,
-          lines: [...search.lines.values()].sort((a, b) => a.multipv - b.multipv).map((item) => ({
-            uci: item.uci,
-            san: this.toSanLine(search.fen, item.uci),
-            evalWhite: item.evalWhite,
-            ...(item.mate === undefined ? {} : { mate: item.mate }),
-            depth: item.depth,
-          })),
-          depth: top?.depth ?? 0,
-        });
+        this.abortActiveSearch(new Error('Stockfish analysis timed out; partial engine output was discarded.'));
       }, 60_000);
 
-      this.activeSearch = { fen, lines: new Map(), resolve, timeout };
+      this.activeSearch = { fen, lines: new Map(), resolve, reject, timeout };
       this.worker.postMessage(`setoption name MultiPV value ${multipv}`);
       this.worker.postMessage(`position fen ${fen}`);
       this.worker.postMessage(`go depth ${depth}`);
@@ -166,12 +178,17 @@ export class LocalStockfish {
   }
 
   stop(): void {
-    if (this.activeSearch) this.worker.postMessage('stop');
+    this.abortActiveSearch(new Error('Stockfish analysis was stopped.'));
   }
 
   destroy(): void {
-    this.stop();
+    if (this.activeSearch) {
+      window.clearTimeout(this.activeSearch.timeout);
+      this.activeSearch.reject(new Error('Stockfish analysis was cancelled.'));
+      this.activeSearch = null;
+    }
     this.worker.terminate();
-    this.activeSearch = null;
+    this.waiters.clear();
+    this.readyPromise = null;
   }
 }

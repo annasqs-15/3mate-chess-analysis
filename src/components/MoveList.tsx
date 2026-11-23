@@ -1,5 +1,9 @@
-import type { ChessSnapshot, MoveReview } from '../types';
+import type { ChessSnapshot, MoveCategory, MoveReview } from '../types';
 import MoveIcon from './MoveIcon';
+
+const BADGE_CATEGORIES = new Set<MoveCategory>([
+  'Brilliant', 'Great', 'Book', 'Inaccuracy', 'Mistake', 'Miss', 'Blunder',
+]);
 
 interface MoveListProps {
   positions: ChessSnapshot[];
@@ -40,7 +44,7 @@ export default function MoveList({ positions, reviews, currentPly, onSelect }: M
                   onClick={() => onSelect(ply)}
                   aria-current={currentPly === ply ? 'step' : undefined}
                 >
-                  {review && <MoveIcon category={review.category} small />}
+                  {review && BADGE_CATEGORIES.has(review.category) && <MoveIcon category={review.category} small />}
                   <span>{move.san}</span>
                 </button>
               );

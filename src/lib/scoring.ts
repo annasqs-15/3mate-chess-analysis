@@ -1,4 +1,4 @@
-import { Chess, DEFAULT_POSITION } from 'chess.js';
+import { Chess, DEFAULT_POSITION, type Square } from 'chess.js';
 import type { ChessSnapshot, EngineLine, MoveCategory, MoveReview, PositionEvaluation } from '../types';
 import { isKnownBookPly } from '../data/openings';
 
@@ -18,7 +18,11 @@ const MAX_TACTIC_LINE_PLIES = 12;
 const MIN_MISS_GAIN = 2.7;
 const MIN_MISS_GAIN_MARGIN = 1.0;
 const MIN_MISS_WINNING_ADVANTAGE = 2.7;
-const MIN_BRILLIANT_NET_SACRIFICE = 1.0;
+const BRILLIANT_MAX_ROOT_LOSS_CP = 30;
+const BRILLIANT_MIN_RESULT_PAWNS = -0.5;
+const BRILLIANT_ALREADY_WINNING_PAWNS = 5;
+const BRILLIANT_RECOVERY_PLIES = 3;
+const BRILLIANT_RECOVERY_NODE_LIMIT = 512;
 
 function opposite(side: Side): Side {
   return side === 'w' ? 'b' : 'w';
@@ -192,20 +196,178 @@ function isTacticalMiss(
   return bestGain - actualGain >= MIN_MISS_GAIN_MARGIN;
 }
 
-function isBrilliantSacrifice(
-  after: PositionEvaluation,
+interface RecoveryBudget {
+  nodes: number;
+}
+
+function exactAtDepth(line: EngineLine | undefined, depth: number): line is EngineLine {
+  return Boolean(line && line.depth === depth && !line.bound && line.uci.length > 0);
+}
+
+function rootMoveLoss(
+  before: PositionEvaluation,
   beforeFen: string,
   playedUci: string,
   mover: Side,
-  loss: number,
+): number | undefined {
+  const bestLine = before.lines[0];
+  if (!bestLine || before.depth < 1 || !exactAtDepth(bestLine, before.depth)) return undefined;
+  const playedLine = before.lines.find((line) => firstUci(line) === playedUci);
+  if (!exactAtDepth(playedLine, before.depth)) return undefined;
+  return centipawnLoss(
+    outcomeForLine(bestLine, before, beforeFen, mover),
+    outcomeForLine(playedLine, before, beforeFen, mover),
+    mover,
+  );
+}
+
+function isWinningFor(signal: ScoreSignal, side: Side): boolean {
+  return signal.kind === 'mate' ? signal.winner === side : signal.value >= BRILLIANT_ALREADY_WINNING_PAWNS;
+}
+
+function hasCompetitiveAlternatives(
+  before: PositionEvaluation,
+  beforeFen: string,
+  playedUci: string,
+  mover: Side,
+): boolean {
+  const bestLine = before.lines[0];
+  if (!bestLine || before.depth < 1 || !exactAtDepth(bestLine, before.depth)) return false;
+  if (!isWinningFor(outcomeForLine(bestLine, before, beforeFen, mover), mover)) return true;
+
+  const alternatives = new Map<string, ScoreSignal>();
+  for (const line of before.lines) {
+    const move = firstUci(line);
+    if (!move || move === playedUci || !exactAtDepth(line, before.depth) || alternatives.has(move)) continue;
+    alternatives.set(move, outcomeForLine(line, before, beforeFen, mover));
+  }
+  if (alternatives.size === 0) return false;
+
+  const strongestAlternative = [...alternatives.values()]
+    .sort((left, right) => signalUtility(right, mover) - signalUtility(left, mover))[0];
+  return strongestAlternative.kind === 'centipawns'
+    && strongestAlternative.value < BRILLIANT_ALREADY_WINNING_PAWNS;
+}
+
+function capturesAndPromotions(chess: Chess) {
+  return chess.moves({ verbose: true }).filter((move) => Boolean(move.captured || move.promotion));
+}
+
+function bestMaterialAfterRecovery(
+  chess: Chess,
+  mover: Side,
+  depth: number,
+  budget: RecoveryBudget,
+  alpha = Number.NEGATIVE_INFINITY,
+  beta = Number.POSITIVE_INFINITY,
+): number | undefined {
+  const current = materialBalance(chess.fen(), mover);
+  if (depth === 0) return current;
+  budget.nodes += 1;
+  if (budget.nodes > BRILLIANT_RECOVERY_NODE_LIMIT) return undefined;
+
+  const maximizing = chess.turn() === mover;
+  let best = current; // Either player may decline further optional exchanges.
+  for (const move of capturesAndPromotions(chess)) {
+    chess.move({ from: move.from, to: move.to, ...(move.promotion ? { promotion: move.promotion } : {}) });
+    const value = bestMaterialAfterRecovery(chess, mover, depth - 1, budget, alpha, beta);
+    chess.undo();
+    if (value === undefined) return undefined;
+    best = maximizing ? Math.max(best, value) : Math.min(best, value);
+    if (maximizing) alpha = Math.max(alpha, best);
+    else beta = Math.min(beta, best);
+    if (beta <= alpha) break;
+  }
+  return best;
+}
+
+function hasNetPieceSacrifice(
+  beforeFen: string,
+  afterFen: string,
+  playedUci: string,
+  mover: Side,
+): boolean {
+  const moveMatch = playedUci.match(/^([a-h][1-8])([a-h][1-8])([qrbn])?$/);
+  if (!moveMatch) return false;
+  const [, from, to] = moveMatch;
+  const before = new Chess(beforeFen);
+  const alternatives = before.moves({ verbose: true }).filter((move) =>
+    `${move.from}${move.to}${move.promotion ?? ''}` !== playedUci,
+  );
+
+  const after = new Chess(afterFen);
+  const offeredPiece = after.get(to as Square);
+  if (!offeredPiece || offeredPiece.color !== mover || offeredPiece.type === 'p' || offeredPiece.type === 'k') return false;
+  const acceptances = after.moves({ verbose: true }).filter((move) => move.to === to && move.captured);
+  if (acceptances.length === 0) return false;
+
+  const startingBalance = materialBalance(beforeFen, mover);
+  const budget: RecoveryBudget = { nodes: 0 };
+
+  // A sacrifice is voluntary only if another legal choice could avoid its local loss.
+  let hasAvoidingAlternative = false;
+  for (const alternative of alternatives) {
+    const board = new Chess(beforeFen);
+    board.move({
+      from: alternative.from,
+      to: alternative.to,
+      ...(alternative.promotion ? { promotion: alternative.promotion } : {}),
+    });
+    const alternativeSquare = alternative.from === from ? alternative.to : from;
+    const remainingPiece = board.get(alternativeSquare as Square);
+    if (!remainingPiece || remainingPiece.color !== mover) continue;
+    const alternativeAcceptances = board.moves({ verbose: true }).filter((move) =>
+      move.to === alternativeSquare && move.captured,
+    );
+    if (alternativeAcceptances.length === 0) {
+      hasAvoidingAlternative = true;
+      break;
+    }
+    let worstAcceptanceBalance = Number.POSITIVE_INFINITY;
+    for (const acceptance of alternativeAcceptances) {
+      board.move({
+        from: acceptance.from,
+        to: acceptance.to,
+        ...(acceptance.promotion ? { promotion: acceptance.promotion } : {}),
+      });
+      const recoveredBalance = bestMaterialAfterRecovery(board, mover, BRILLIANT_RECOVERY_PLIES, budget);
+      board.undo();
+      if (recoveredBalance === undefined) return false;
+      worstAcceptanceBalance = Math.min(worstAcceptanceBalance, recoveredBalance);
+    }
+    if (worstAcceptanceBalance >= startingBalance - 0.01) {
+      hasAvoidingAlternative = true;
+      break;
+    }
+  }
+  if (!hasAvoidingAlternative) return false;
+
+  for (const acceptance of acceptances) {
+    after.move({ from: acceptance.from, to: acceptance.to, ...(acceptance.promotion ? { promotion: acceptance.promotion } : {}) });
+    const recoveredBalance = bestMaterialAfterRecovery(after, mover, BRILLIANT_RECOVERY_PLIES, budget);
+    after.undo();
+    // Budget exhaustion is lack of evidence, never a positive Brilliant signal.
+    if (recoveredBalance === undefined) return false;
+    if (recoveredBalance < startingBalance - 0.01) return true;
+  }
+  return false;
+}
+
+function isBrilliantSacrifice(
+  before: PositionEvaluation,
+  after: PositionEvaluation,
+  beforeFen: string,
+  afterFen: string,
+  playedUci: string,
+  mover: Side,
   playedSignal: ScoreSignal,
 ): boolean {
-  if (loss > 30 || !after.lines[0]) return false;
-  if (playedSignal.kind === 'mate' ? playedSignal.winner !== mover : playedSignal.value < -0.3) return false;
-
-  const playedLine = [playedUci, ...after.lines[0].uci];
-  const netMaterialGain = materialGainAlongLine(beforeFen, mover, playedLine);
-  return netMaterialGain <= -MIN_BRILLIANT_NET_SACRIFICE;
+  const loss = rootMoveLoss(before, beforeFen, playedUci, mover);
+  if (loss === undefined || loss > BRILLIANT_MAX_ROOT_LOSS_CP) return false;
+  if (!exactAtDepth(after.lines[0], after.depth) || after.depth < 1) return false;
+  if (playedSignal.kind === 'mate' ? playedSignal.winner !== mover : playedSignal.value < BRILLIANT_MIN_RESULT_PAWNS) return false;
+  if (!hasCompetitiveAlternatives(before, beforeFen, playedUci, mover)) return false;
+  return hasNetPieceSacrifice(beforeFen, afterFen, playedUci, mover);
 }
 
 function isGreatMove(
@@ -240,7 +402,9 @@ function isCheckmatePosition(fen: string): boolean {
 export function classifyMoves(
   positions: ChessSnapshot[],
   evaluations: Array<PositionEvaluation | undefined>,
+  reviewComplete = false,
 ): MoveReview[] {
+  if (!reviewComplete) return [];
   const sans = positions.slice(1).map((position) => position.san ?? '');
   const startsFromStandardPosition = positions[0]?.fen === DEFAULT_POSITION;
   const reviews: MoveReview[] = [];
@@ -248,23 +412,19 @@ export function classifyMoves(
   for (let ply = 1; ply < positions.length; ply += 1) {
     const before = evaluations[ply - 1];
     const after = evaluations[ply];
-    if (!before || !after) continue;
-
     const mover: Side = ply % 2 === 1 ? 'w' : 'b';
     const beforeFen = positions[ply - 1].fen;
     const playedFen = positions[ply].fen;
-    const bestLine = before.lines[0];
-    const playedLine = after.lines[0];
-    const bestSignal = outcomeForLine(bestLine, before, beforeFen, mover);
-    const playedSignal = outcomeForLine(playedLine, after, playedFen, mover);
     const isMate = isCheckmatePosition(playedFen);
-    const forcedMateProof = mateProvedByBestReply(
-      positions[ply],
-      positions[ply + 1],
-      after,
-      evaluations[ply + 1],
-      mover,
-    );
+    if (!before || (!after && !isMate)) continue;
+    const bestLine = before.lines[0];
+    const bestSignal = outcomeForLine(bestLine, before, beforeFen, mover);
+    const playedSignal: ScoreSignal = isMate
+      ? { kind: 'mate', winner: mover }
+      : outcomeForLine(after?.lines[0], after!, playedFen, mover);
+    const forcedMateProof = after ? mateProvedByBestReply(
+      positions[ply], positions[ply + 1], after, evaluations[ply + 1], mover,
+    ) : undefined;
     const effectivePlayedSignal = forcedMateProof?.signal ?? playedSignal;
     const loss = isMate ? 0 : centipawnLoss(bestSignal, effectivePlayedSignal, mover);
     const expectedPointsLost = isMate ? 0 : Math.max(
@@ -274,17 +434,20 @@ export function classifyMoves(
     const playedUci = playedMoveUci(positions[ply]);
     let category: MoveCategory;
 
-    if (startsFromStandardPosition && isKnownBookPly(sans, ply)) {
-      category = 'Book';
-    } else if (isMate) {
+    if (isMate) {
       category = 'Best';
-    } else if (playedUci && isBrilliantSacrifice(after, beforeFen, playedUci, mover, loss, playedSignal)) {
+    } else if (startsFromStandardPosition && isKnownBookPly(sans, ply)) {
+      category = 'Book';
+    } else if (!isMate && playedUci && after && isBrilliantSacrifice(
+      before, after, beforeFen, playedFen, playedUci, mover, effectivePlayedSignal,
+    )) {
       category = 'Brilliant';
     } else if (isGreatMove(before, beforeFen, mover, loss)) {
       category = 'Great';
     } else if (
       loss >= 100 &&
       playedUci &&
+      after &&
       isTacticalMiss(before, after, beforeFen, playedUci, mover, bestSignal, effectivePlayedSignal)
     ) {
       category = 'Miss';

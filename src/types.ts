@@ -22,6 +22,7 @@ export interface EngineLine {
   san: string[];
   evalWhite: number;
   mate?: number;
+  bound?: 'lower' | 'upper';
   depth: number;
 }
 

@@ -32,6 +32,7 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [evaluations, setEvaluations] = useState<Array<PositionEvaluation | undefined>>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisComplete, setAnalysisComplete] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [engineError, setEngineError] = useState('');
   const [toast, setToast] = useState('');
@@ -39,7 +40,10 @@ export default function App() {
   const runIdRef = useRef(0);
   const currentSnapshot = game.positions[Math.min(currentPly, game.positions.length - 1)];
   const currentEvaluation = evaluations[currentPly];
-  const reviews = useMemo(() => classifyMoves(game.positions, evaluations), [game.positions, evaluations]);
+  const reviews = useMemo(
+    () => classifyMoves(game.positions, evaluations, analysisComplete && !isAnalyzing && !engineError),
+    [game.positions, evaluations, analysisComplete, isAnalyzing, engineError],
+  );
   const currentReview = reviews.find((review) => review.ply === currentPly);
   const whiteAccuracy = accuracyForColor(reviews, 'w');
   const blackAccuracy = accuracyForColor(reviews, 'b');
@@ -54,6 +58,7 @@ export default function App() {
     runIdRef.current += 1;
     engineRef.current?.stop();
     setIsAnalyzing(false);
+    setAnalysisComplete(false);
   }, []);
 
   useEffect(() => () => {
@@ -89,6 +94,7 @@ export default function App() {
       setGame(parsed);
       setCurrentPly(0);
       setEvaluations([]);
+      setAnalysisComplete(false);
       setProgress({ done: 0, total: 0 });
       setEngineError('');
       setFlipped(false);
@@ -106,6 +112,7 @@ export default function App() {
       setGame(result.game);
       setCurrentPly(result.ply);
       setEvaluations([]);
+      setAnalysisComplete(false);
       setProgress({ done: 0, total: 0 });
       setEngineError('');
     } catch {
@@ -117,6 +124,7 @@ export default function App() {
     if (isAnalyzing) return;
     const runId = ++runIdRef.current;
     setIsAnalyzing(true);
+    setAnalysisComplete(false);
     setEngineError('');
     setEvaluations([]);
     setProgress({ done: 0, total: positionList.length });
@@ -133,6 +141,7 @@ export default function App() {
         setEvaluations([...result]);
         setProgress({ done: index + 1, total: positionList.length });
       }
+      setAnalysisComplete(true);
       setToast('Local review complete');
     } catch (error) {
       if (runIdRef.current === runId) {
@@ -190,7 +199,7 @@ export default function App() {
           <div className="game-meta-text"><span className="eyebrow">CURRENT GAME</span><strong>{gameLabel}</strong></div>
           <div className="player-pair"><span className="player-name"><i className="player-dot player-dot-white" />{whiteName}</span><span className="vs-divider">vs</span><span className="player-name"><i className="player-dot player-dot-black" />{blackName}</span></div>
           <span className={`result-chip${gameResult === 'In progress' ? ' result-live' : ''}`}>{gameResult}</span>
-          <button className="icon-button meta-refresh" type="button" title="Reload demo game" aria-label="Reload demo game" onClick={() => { cancelReview(); setGame(parsePgn(DEMO_PGN)); setCurrentPly(0); setEvaluations([]); setEngineError(''); }}><RotateCcw size={16} /></button>
+          <button className="icon-button meta-refresh" type="button" title="Reload demo game" aria-label="Reload demo game" onClick={() => { cancelReview(); setGame(parsePgn(DEMO_PGN)); setCurrentPly(0); setEvaluations([]); setAnalysisComplete(false); setEngineError(''); }}><RotateCcw size={16} /></button>
         </div>
 
         <div className="review-layout">
