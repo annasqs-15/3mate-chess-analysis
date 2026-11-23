@@ -249,8 +249,9 @@ function hasCompetitiveAlternatives(
     && strongestAlternative.value < BRILLIANT_ALREADY_WINNING_PAWNS;
 }
 
-function capturesAndPromotions(chess: Chess) {
-  return chess.moves({ verbose: true }).filter((move) => Boolean(move.captured || move.promotion));
+function recoveryMoves(chess: Chess) {
+  const inCheck = chess.isCheck();
+  return chess.moves({ verbose: true }).filter((move) => Boolean(move.captured || move.promotion || inCheck));
 }
 
 function bestMaterialAfterRecovery(
@@ -268,7 +269,7 @@ function bestMaterialAfterRecovery(
 
   const maximizing = chess.turn() === mover;
   let best = current; // Either player may decline further optional exchanges.
-  for (const move of capturesAndPromotions(chess)) {
+  for (const move of recoveryMoves(chess)) {
     chess.move({ from: move.from, to: move.to, ...(move.promotion ? { promotion: move.promotion } : {}) });
     const value = bestMaterialAfterRecovery(chess, mover, depth - 1, budget, alpha, beta);
     chess.undo();
