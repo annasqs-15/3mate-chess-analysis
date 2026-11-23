@@ -12,6 +12,34 @@ import { LocalStockfish } from './lib/engine';
 import { playerName } from './lib/format';
 import type { EngineLine, GameSource, ParsedGame, PositionEvaluation } from './types';
 
+declare const __3MATE_BUILD_ID__: string;
+
+const UPDATE_SESSION_KEY = '3mate:pending-version-update';
+
+interface PendingVersionUpdate {
+  mode: GameSource;
+  text: string;
+  ply: number;
+  flipped: boolean;
+}
+
+function takePendingVersionUpdate(): { game: ParsedGame; ply: number; flipped: boolean } | null {
+  try {
+    const saved = window.sessionStorage.getItem(UPDATE_SESSION_KEY);
+    if (!saved) return null;
+    window.sessionStorage.removeItem(UPDATE_SESSION_KEY);
+    const pending = JSON.parse(saved) as PendingVersionUpdate;
+    const game = pending.mode === 'pgn' ? parsePgn(pending.text) : parseFen(pending.text);
+    return {
+      game,
+      ply: Math.max(0, Math.min(pending.ply, game.positions.length - 1)),
+      flipped: pending.flipped,
+    };
+  } catch {
+    return null;
+  }
+}
+
 const DEMO_PGN = `[Event "Ruy Lopez · study sample"]
 [Site "3mate local demo"]
 [Date "2024.01.01"]
@@ -24,20 +52,23 @@ const DEMO_PGN = `[Event "Ruy Lopez · study sample"]
 
 const REVIEW_DEPTH = 12;
 const REVIEW_MULTIPV = 3;
+const restoredUpdate = typeof window === 'undefined' ? null : takePendingVersionUpdate();
 
 export default function App() {
-  const [game, setGame] = useState<ParsedGame>(() => parsePgn(DEMO_PGN));
-  const [currentPly, setCurrentPly] = useState(0);
-  const [flipped, setFlipped] = useState(false);
+  const [game, setGame] = useState<ParsedGame>(() => restoredUpdate?.game ?? parsePgn(DEMO_PGN));
+  const [currentPly, setCurrentPly] = useState(() => restoredUpdate?.ply ?? 0);
+  const [flipped, setFlipped] = useState(() => restoredUpdate?.flipped ?? false);
   const [importOpen, setImportOpen] = useState(false);
   const [evaluations, setEvaluations] = useState<Array<PositionEvaluation | undefined>>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisComplete, setAnalysisComplete] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [engineError, setEngineError] = useState('');
-  const [toast, setToast] = useState('');
+  const [toast, setToast] = useState(restoredUpdate ? 'Latest version loaded. Run the review again to restore engine results.' : '');
   const engineRef = useRef<LocalStockfish | null>(null);
   const runIdRef = useRef(0);
+  const pendingBuildRef = useRef<string | null>(null);
+  const updateStartedRef = useRef(false);
   const currentSnapshot = game.positions[Math.min(currentPly, game.positions.length - 1)];
   const currentEvaluation = evaluations[currentPly];
   const reviews = useMemo(
@@ -65,6 +96,86 @@ export default function App() {
     runIdRef.current += 1;
     engineRef.current?.destroy();
   }, []);
+
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+    let active = true;
+
+    const preserveGameAndReload = (nextBuildId: string) => {
+      if (!active || updateStartedRef.current) return;
+      if (isAnalyzing || importOpen) {
+        pendingBuildRef.current = nextBuildId;
+        return;
+      }
+
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('__3mate_build') === nextBuildId) {
+        setToast('A newer version is published, but this browser still returned the previous files. Reopen the page to retry.');
+        return;
+      }
+
+      updateStartedRef.current = true;
+      const saved: PendingVersionUpdate = game.source === 'pgn' && game.pgn
+        ? { mode: 'pgn', text: game.pgn, ply: currentPly, flipped }
+        : { mode: 'fen', text: currentSnapshot.fen, ply: 0, flipped };
+      try {
+        window.sessionStorage.setItem(UPDATE_SESSION_KEY, JSON.stringify(saved));
+      } catch {
+        // Updating still works if this browser blocks session storage; only game restoration is lost.
+      }
+      url.searchParams.set('__3mate_build', nextBuildId);
+      url.searchParams.set('__3mate_fresh', String(Date.now()));
+      window.location.replace(url.toString());
+    };
+
+    const checkLatestBuild = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const versionUrl = new URL('version.json', document.baseURI);
+        versionUrl.searchParams.set('_', `${Date.now()}-${Math.random()}`);
+        const response = await fetch(versionUrl, {
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' },
+        });
+        if (!response.ok) return;
+        const version = await response.json() as { buildId?: unknown };
+        if (typeof version.buildId === 'string' && version.buildId !== __3MATE_BUILD_ID__) {
+          preserveGameAndReload(version.buildId);
+        }
+      } catch {
+        // A temporary offline/network failure must not affect local chess analysis.
+      }
+    };
+
+    void checkLatestBuild();
+    const interval = window.setInterval(() => { void checkLatestBuild(); }, 20_000);
+    document.addEventListener('visibilitychange', checkLatestBuild);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', checkLatestBuild);
+    };
+  }, [game, currentPly, currentSnapshot.fen, flipped, isAnalyzing, importOpen]);
+
+  useEffect(() => {
+    const nextBuildId = pendingBuildRef.current;
+    if (!nextBuildId || isAnalyzing || importOpen) return;
+    pendingBuildRef.current = null;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('__3mate_build') === nextBuildId) return;
+    const saved: PendingVersionUpdate = game.source === 'pgn' && game.pgn
+      ? { mode: 'pgn', text: game.pgn, ply: currentPly, flipped }
+      : { mode: 'fen', text: currentSnapshot.fen, ply: 0, flipped };
+    try {
+      window.sessionStorage.setItem(UPDATE_SESSION_KEY, JSON.stringify(saved));
+    } catch {
+      // The updated app can still load if this browser blocks session storage.
+    }
+    url.searchParams.set('__3mate_build', nextBuildId);
+    url.searchParams.set('__3mate_fresh', String(Date.now()));
+    window.location.replace(url.toString());
+  }, [game, currentPly, currentSnapshot.fen, flipped, isAnalyzing, importOpen]);
 
   useEffect(() => {
     if (!toast) return;
